@@ -16,6 +16,18 @@
   - `/typesafe_status` 状态面板新增“唤醒词过滤”状态项。
   - `COMMAND_PREFIXES` 列表同步补齐 `//`，避免带双斜杠指令被误当普通消息处理。
 
+### 逻辑严谨性与执行效率深度审查修复
+- **消除普通消息包含 URL (http:// / https://) 引起的误判**：
+  - 修复 `filters.py` 中底层原始数据包检测中的 `:{p}` 规则导致的严重误判（此前在消息中包含 `https://` 网址时，因包含 `://` 会被误判为唤醒词前缀并被忽略）；现已精确限制为行首换行前缀（`\n//`、`\\n//`、`\r\n//`、`:\n//` 等），彻底杜绝普通链接被误拦截。
+- **Provider 获取兼容异步与同步返回**：
+  - `reply_engine.py` 增强对 AstrBot 不同版本中 `context.get_current_chat_provider_id` 同步/异步返回的自适应处理，避免非协程对象直接被 `await` 引发的 `TypeError`。
+- **意图类型匹配 Set 预计算 (O(1) 查询)**：
+  - 在插件启动时预构建 `self.allowed_reply_types_set`，并在 `MessageClassifier.is_reply_type_allowed` 中提供快速 Set 命中通道，消除每条判定消息重复构建集合的性能开销。
+- **长时间运行频控孤立记录清理**：
+  - 在 `utils.py` 中对 `CooldownTracker` 的中间消息计数进行 `min(cnt, 10)` 封顶保护，并在周期清理中自动修剪未产生过回复的会话孤立记录，避免持续挂机时的内存膨胀。
+- **私聊判断安全降级保护**：
+  - 针对部分非标准第三方适配器或特殊事件对象，对 `event.is_private_chat()` 增加异常捕获并平滑降级为 `get_group_id` 判定。
+
 ## [1.0.5] - 2026-09-21
 
 ### 全链路性能与运行效率深度优化

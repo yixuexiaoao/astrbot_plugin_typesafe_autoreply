@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union, Set
 import logging
 
 from typesafe_sdk import Choice
@@ -237,10 +237,18 @@ class MessageClassifier:
         return current_rank >= required_rank
 
     @staticmethod
-    def is_reply_type_allowed(reply_type: str, allowed_types: List[str]) -> bool:
-        """判断意图类型是否在用户允许的名单内，支持中文名和英文键名双向匹配"""
+    def is_reply_type_allowed(
+        reply_type: str, allowed_types: Union[List[str], Set[str]]
+    ) -> bool:
+        """判断意图类型是否在用户允许的名单内，支持中文名和英文键名双向匹配，支持预计算集合直接命中 (O(1))"""
         if not allowed_types:
             return False
+
+        if isinstance(allowed_types, set):
+            return (
+                reply_type in allowed_types
+                or REPLY_TYPE_NAMES.get(reply_type, "") in allowed_types
+            )
 
         # 转换为规范英文键名集合与原始集合
         canonical_allowed = set()

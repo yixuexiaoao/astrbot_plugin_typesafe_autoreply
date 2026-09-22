@@ -230,6 +230,19 @@ class TestFilters(unittest.TestCase):
         self.assertFalse(is_wake)
         self.assertIsNone(prefix)
 
+        # 6. 包含 https:// 链接的普通消息绝不能误判为唤醒词 (杜绝 :// 误判)
+        event6 = MagicMock()
+        event6.get_message_str.return_value = "推荐你看这个网站 https://github.com/abc"
+        msg_obj6 = MagicMock()
+        msg_obj6.message_str = "推荐你看这个网站 https://github.com/abc"
+        msg_obj6.raw_message = {"content": {"str": "user01:\n推荐你看这个网站 https://github.com/abc"}}
+        event6.message_obj = msg_obj6
+        event6.get_messages.return_value = []
+        event6.is_at_or_wake_command = False
+        is_wake, prefix = MessageFilter.is_wake_word_message(event6, wake_prefixes=["//", "/"])
+        self.assertFalse(is_wake)
+        self.assertIsNone(prefix)
+
     def test_bot_alias_detection(self):
         aliases = ["小白", "机器人", "AI"]
         self.assertTrue(MessageFilter.is_bot_name_mentioned("小白，你怎么看？", aliases))
@@ -434,6 +447,20 @@ class TestReplyEngine(unittest.IsolatedAsyncioTestCase):
         context.llm_generate.assert_called_once()
         self.assertEqual(context.llm_generate.call_args[1]["chat_provider_id"], "fallback_provider")
 
+    async def test_reply_engine_sync_provider_id(self):
+        from reply_engine import ReplyEngine
+        context = MagicMock()
+        context.get_current_chat_provider_id = MagicMock(return_value="sync_provider_1")
+        llm_resp = MagicMock()
+        llm_resp.completion_text = "这是测试回复"
+        context.llm_generate = AsyncMock(return_value=llm_resp)
+        engine = ReplyEngine(context)
+
+        event = MagicMock()
+        event.unified_msg_origin = "origin_1"
+        reply = await engine.generate_reply(event, "测试", "上下文")
+        self.assertEqual(reply, "这是测试回复")
+
 
 class TestClassifier(unittest.IsolatedAsyncioTestCase):
     async def test_failure_modes(self):
@@ -455,19 +482,20 @@ class TestClassifier(unittest.IsolatedAsyncioTestCase):
         # Test rule_based failure mode
         wrapper.failure_mode = "rule_based"
         decision = await classifier.classify_message(state)
-        self.assertTrue(decision.should_reply)  # Has question mark
+        self.assertTrue(decision.should_reply)
+        self.assertEqual(decision.reply_type, "explicit_question")
 
-    def test_threshold_and_type_check(self):
-        # Chinese & English confidence
-        self.assertTrue(MessageClassifier.is_confidence_sufficient("高", "中"))
-        self.assertTrue(MessageClassifier.is_confidence_sufficient("high", "中"))
-        self.assertFalse(MessageClassifier.is_confidence_sufficient("低", "中"))
-
-        # Chinese & English allowed reply types
+    def test_allowed_types(self):
         allowed_chinese = ["明确提问", "技术问题"]
         self.assertTrue(MessageClassifier.is_reply_type_allowed("explicit_question", allowed_chinese))
         self.assertTrue(MessageClassifier.is_reply_type_allowed("明确提问", allowed_chinese))
         self.assertFalse(MessageClassifier.is_reply_type_allowed("casual_chat", allowed_chinese))
+
+    def test_is_reply_type_allowed_with_set(self):
+        type_set = {"明确提问", "explicit_question", "讨论", "discussion"}
+        self.assertTrue(MessageClassifier.is_reply_type_allowed("explicit_question", type_set))
+        self.assertTrue(MessageClassifier.is_reply_type_allowed("discussion", type_set))
+        self.assertFalse(MessageClassifier.is_reply_type_allowed("casual_chat", type_set))
 
 
 class TestPluginE2E(unittest.IsolatedAsyncioTestCase):

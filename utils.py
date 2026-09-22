@@ -82,7 +82,7 @@ class CooldownTracker:
             return
 
         cnt = self._intervening_messages.get(session_id, 0) + 1
-        self._intervening_messages[session_id] = cnt
+        self._intervening_messages[session_id] = min(cnt, 10)
 
         now = time.time()
         last_reply = self._session_last_reply.get(session_id, 0)
@@ -90,6 +90,8 @@ class CooldownTracker:
 
         if cnt >= 3 or cooldown_passed:
             self._continuous_reply_count[session_id] = 0
+            if last_reply == 0:
+                self._intervening_messages.pop(session_id, None)
 
     def reset_continuous(self, session_id: str):
         """显式重置会话的连续回复计数（例如用户主动 @机器人 时）"""
@@ -123,6 +125,12 @@ class CooldownTracker:
         ]
         for uid in expired_users:
             self._user_last_reply.pop(uid, None)
+
+        # 清理未在 active 会话中的 _intervening_messages 孤立记录
+        if len(self._intervening_messages) > 500:
+            for sid in list(self._intervening_messages.keys()):
+                if sid not in self._session_last_reply:
+                    self._intervening_messages.pop(sid, None)
 
         # 如果清理过期后仍然超过容量上限（例如 500），强制淘汰时间最早的 20%
         if len(self._session_last_reply) > 500:

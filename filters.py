@@ -284,7 +284,7 @@ class MessageFilter:
                             raw_str.startswith(p)
                             or f"\n{p}" in raw_str
                             or f"\\n{p}" in raw_str
-                            or f":{p}" in raw_str
+                            or f"\r\n{p}" in raw_str
                             or f":\n{p}" in raw_str
                             or f":\\n{p}" in raw_str
                         ):
@@ -302,6 +302,12 @@ class MessageFilter:
                         is_private = res
                 except Exception:
                     pass
+            elif hasattr(event, "get_group_id"):
+                try:
+                    is_private = not bool(event.get_group_id())
+                except Exception:
+                    pass
+
             if not is_private:
                 if not cls.is_explicitly_at_bot(event, bot_aliases):
                     return True, prefixes[0] if prefixes else "//"

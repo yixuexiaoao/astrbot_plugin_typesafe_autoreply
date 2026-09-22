@@ -15,7 +15,7 @@ from astrbot.api import AstrBotConfig
 
 try:
     from .typesafe_client import TypeSafeClientWrapper
-    from .classifier import MessageClassifier, REPLY_TYPE_NAMES
+    from .classifier import MessageClassifier, REPLY_TYPE_NAMES, REPLY_NAME_TO_KEY
     from .reply_engine import ReplyEngine
     from .context_manager import ContextManager
     from .filters import MessageFilter
@@ -35,7 +35,7 @@ try:
     )
 except (ImportError, ValueError):
     from typesafe_client import TypeSafeClientWrapper
-    from classifier import MessageClassifier, REPLY_TYPE_NAMES
+    from classifier import MessageClassifier, REPLY_TYPE_NAMES, REPLY_NAME_TO_KEY
     from reply_engine import ReplyEngine
     from context_manager import ContextManager
     from filters import MessageFilter
@@ -142,6 +142,15 @@ class TypeSafeAutoReplyPlugin(Star):
                 "信息查询",
                 "建议请求",
             ]
+
+        # 预构建规范化允许回复类型集合（包含中文名与英文键名双向映射），实现 O(1) 瞬时检索
+        self.allowed_reply_types_set = set()
+        for t in self.allowed_reply_types:
+            t_str = str(t).strip()
+            if t_str:
+                self.allowed_reply_types_set.add(t_str)
+                if t_str in REPLY_NAME_TO_KEY:
+                    self.allowed_reply_types_set.add(REPLY_NAME_TO_KEY[t_str])
 
         # 3. 回复模型与生成配置
         self.model_mode = normalize_model_mode(
@@ -347,7 +356,11 @@ class TypeSafeAutoReplyPlugin(Star):
             return
 
         # 2. 群聊 / 私聊启用检查（极速短路，未启用的会话类型在 0.001ms 内直接退出，零资源浪费）
-        is_private = event.is_private_chat()
+        try:
+            is_private = bool(event.is_private_chat())
+        except Exception:
+            is_private = not bool(event.get_group_id())
+
         if is_private and not self.enable_private:
             return
         if not is_private and not self.enable_group:
@@ -671,7 +684,7 @@ class TypeSafeAutoReplyPlugin(Star):
         # 16. 类型是否在允许列表中？
         # 若是显式 @机器人 且用户开启了使用 TypeSafe 研判，只要 TypeSafe 裁决 should_reply=True 则放行回复
         is_type_allowed = MessageClassifier.is_reply_type_allowed(
-            decision.reply_type, self.allowed_reply_types
+            decision.reply_type, self.allowed_reply_types_set
         )
         if not is_at_bot and not is_type_allowed:
             chinese_allowed = [

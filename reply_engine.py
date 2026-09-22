@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Optional
 
@@ -77,9 +78,13 @@ class ReplyEngine:
             provider_id = custom_provider_id.strip()
         else:
             try:
-                provider_id = await self.context.get_current_chat_provider_id(
+                res = self.context.get_current_chat_provider_id(
                     umo=event.unified_msg_origin
                 )
+                if asyncio.iscoroutine(res) or hasattr(res, "__await__"):
+                    provider_id = await res
+                else:
+                    provider_id = res
             except Exception as e:
                 logger.warning(f"[ReplyEngine] 获取当前会话 Provider ID 失败: {e}")
 
