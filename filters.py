@@ -5,7 +5,7 @@ from typing import List, Tuple, Optional, Union, Iterable, Set
 class MessageFilter:
     """本地规则过滤器，优先于 TypeSafe AI 执行"""
 
-    COMMAND_PREFIXES: Tuple[str, ...] = ("/", "#", "!", "！", "。", ".", "／")
+    COMMAND_PREFIXES: Tuple[str, ...] = ("//", "/", "#", "!", "！", "。", ".", "／")
 
     # 常见纯媒体/表情/代码消息占位符或标签
     MEDIA_PLACEHOLDER_REGEX = re.compile(
@@ -169,7 +169,14 @@ class MessageFilter:
         1. 不能直接使用 event.is_wake_up()，因为在 AstrBot 中只要注册了监听器，所有进入插件的事件其 event.is_wake 都会被框架置为 True。
         2. @全体成员 (AtAll) 是针对群成员的通告，不应视为指名道姓 @机器人。
         """
-        self_id = str(event.get_self_id() or "").strip()
+        self_id = ""
+        if hasattr(event, "get_self_id"):
+            try:
+                raw_self_id = event.get_self_id()
+                if isinstance(raw_self_id, (str, int)):
+                    self_id = str(raw_self_id).strip()
+            except Exception:
+                pass
 
         # 1. 遍历消息链组件检测 At 和 Reply
         try:
@@ -204,5 +211,101 @@ class MessageFilter:
                     return True
 
         return False
+
+    @classmethod
+    def is_wake_word_message(
+        cls,
+        event,
+        wake_prefixes: Optional[Iterable[str]] = None,
+        bot_aliases: Optional[List[str]] = None,
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        判断消息是否使用了自定义唤醒词/唤醒前缀（如 //、/ 等）显式唤醒机器人。
+        由于 AstrBot 在 WakingCheckStage 匹配到 wake_prefix 后会将其从 event.message_str 剥离，
+        本方法进行多层次精确检测：
+        1. 框架剥离前的原始字符串 (event.message_obj.message_str)
+        2. 当前事件文本 (event.get_message_str())
+        3. 首个组件文本 (event.get_messages())
+        4. 底层原始消息 (event.message_obj.raw_message)
+        5. AstrBot 框架原生唤醒标记 (event.is_at_or_wake_command)
+        """
+        prefixes = [str(p).strip() for p in (wake_prefixes or []) if str(p).strip()]
+        if not prefixes:
+            prefixes = ["//"]
+
+        # 1. 检查 event.message_obj.message_str（框架剥离前的原始文本）
+        msg_obj = getattr(event, "message_obj", None)
+        orig_msg_str = getattr(msg_obj, "message_str", None)
+        if orig_msg_str and isinstance(orig_msg_str, str):
+            s = orig_msg_str.strip()
+            for p in prefixes:
+                if s.startswith(p):
+                    return True, p
+
+        # 2. 检查当前 event.get_message_str()
+        curr_text = str(event.get_message_str() or "").strip()
+        for p in prefixes:
+            if curr_text.startswith(p):
+                return True, p
+
+        # 3. 检查首个 Plain 文本组件
+        try:
+            messages = event.get_messages() or []
+            if messages:
+                first_comp = messages[0]
+                comp_text = getattr(first_comp, "text", "") or ""
+                if isinstance(comp_text, str) and comp_text.strip():
+                    first_stripped = comp_text.strip()
+                    for p in prefixes:
+                        if first_stripped.startswith(p):
+                            return True, p
+        except Exception:
+            pass
+
+        # 4. 检查底层 raw_message（支持各平台适配器原始结构）
+        if msg_obj:
+            raw_msg = getattr(msg_obj, "raw_message", None)
+            if raw_msg:
+                raw_str = ""
+                if isinstance(raw_msg, dict):
+                    content = raw_msg.get("content", "")
+                    if isinstance(content, dict):
+                        raw_str = str(content.get("str", "") or "")
+                    else:
+                        raw_str = str(content or "")
+                elif isinstance(raw_msg, str):
+                    raw_str = raw_msg
+                else:
+                    raw_str = str(raw_msg)
+
+                if raw_str:
+                    for p in prefixes:
+                        if (
+                            raw_str.startswith(p)
+                            or f"\n{p}" in raw_str
+                            or f"\\n{p}" in raw_str
+                            or f":{p}" in raw_str
+                            or f":\n{p}" in raw_str
+                            or f":\\n{p}" in raw_str
+                        ):
+                            return True, p
+
+        # 5. 检查 AstrBot 框架的原生唤醒标记 is_at_or_wake_command
+        # 在群聊中，若框架标记了 is_at_or_wake_command=True，且既非显式@ 也非回复机器人，
+        # 则说明必定是命中了 AstrBot 全局配置的 wake_prefix 唤醒词！
+        if getattr(event, "is_at_or_wake_command", False) is True:
+            is_private = False
+            if hasattr(event, "is_private_chat"):
+                try:
+                    res = event.is_private_chat()
+                    if isinstance(res, bool):
+                        is_private = res
+                except Exception:
+                    pass
+            if not is_private:
+                if not cls.is_explicitly_at_bot(event, bot_aliases):
+                    return True, prefixes[0] if prefixes else "//"
+
+        return False, None
 
 

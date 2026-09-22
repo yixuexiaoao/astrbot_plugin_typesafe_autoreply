@@ -1,5 +1,21 @@
 # 更新日志 (CHANGELOG)
 
+## [1.0.6] - 2026-09-22
+
+### 自定义唤醒词/前缀（如“//”）识别与原生 AstrBot 接管放行
+- **精准区分自定义唤醒词与群聊自动回复**：
+  - 用户在使用 AstrBot 自定义唤醒词（如 `//眼镜片 1.74和1.60有什么区别`）主动呼叫机器人时，AstrBot 的 `WakingCheckStage` 会从 `event.message_str` 中剥离该前缀并置位 `event.is_at_or_wake_command = True`。
+  - 之前版本由于前缀被框架剥离，插件误将该消息当成普通群聊闲聊，调用了 TypeSafe 判断与主动回复，并调用了 `event.stop_event()` 截断事件，导致 AstrBot 原生 Agent / 对话流程被拦截无法执行。
+  - 新版本新增多层检测机制（`MessageFilter.is_wake_word_message`）：从原始消息对象 `event.message_obj.message_str`、当前文本、首组件文本、适配器底层报文 `raw_message`（支持微信 padpro 等各类适配器 JSON / 文本换行格式 `\n//`、`\\n//`）、以及 AstrBot 框架原生唤醒标记 `is_at_or_wake_command` 全方位探测唤醒词。
+- **无损放行原生管线**：
+  - 当检测到消息使用了自定义唤醒词（如 `//`）显式唤醒机器人时，插件自动识别并记录日志 `[TypeSafe] [唤醒词接管] 检测到消息使用唤醒词/前缀 ('//') 唤醒机器人，本插件不执行自动回复，交由 AstrBot 原生处理`。
+  - 插件立即退出，**不自动回复**且**绝不调用 `event.stop_event()`**，使得 AstrBot 的原生对话流水线（`process_stage`）能够顺利触发原生 Agent 和已挂载工具。
+- **配置与状态面板支持**：
+  - 新增配置项 `ignore_wake_words`（忽略自定义唤醒词消息，默认开启）。
+  - 新增配置项 `custom_wake_prefixes`（自定义唤醒词前缀列表，默认包含 `["//"]`），并自动与 AstrBot 全局配置中的 `wake_prefix` 合并。
+  - `/typesafe_status` 状态面板新增“唤醒词过滤”状态项。
+  - `COMMAND_PREFIXES` 列表同步补齐 `//`，避免带双斜杠指令被误当普通消息处理。
+
 ## [1.0.5] - 2026-09-21
 
 ### 全链路性能与运行效率深度优化

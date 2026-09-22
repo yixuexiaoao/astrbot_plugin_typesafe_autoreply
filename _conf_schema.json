@@ -165,13 +165,25 @@
   "at_bot_mode": {
     "description": "被 @ 机器人时处理策略",
     "type": "string",
-    "hint": "在群聊中被 @ 机器人时，选择是否忽略 TypeSafe AI 直接调用 LLM 回复、经由 TypeSafe AI 判定、或交由 AstrBot 原生处理",
+    "hint": "在群聊中被 @ 机器人时：【忽略 TypeSafe AI】由本插件直接调大模型回复；【使用 TypeSafe AI 判定】由本插件经 TypeSafe 判定后回复；【不处理，交由 AstrBot 原生处理】本插件不插手，交由 AstrBot 原生 Agent/预设人格处理",
     "options": [
       "忽略 TypeSafe AI (直接调用 LLM 回复)",
       "使用 TypeSafe AI 判定",
       "不处理，交由 AstrBot 原生处理"
     ],
     "default": "忽略 TypeSafe AI (直接调用 LLM 回复)"
+  },
+  "ignore_wake_words": {
+    "description": "忽略自定义唤醒词消息 (不自动回复)",
+    "type": "bool",
+    "hint": "开启后，使用自定义唤醒词（如 //）唤醒机器人的消息，本插件不进行自动回复，直接交由 AstrBot 原生处理",
+    "default": true
+  },
+  "custom_wake_prefixes": {
+    "description": "自定义唤醒词/前缀列表",
+    "type": "list",
+    "hint": "识别为唤醒词的前缀列表（默认已包含 //，同时会自动读取 AstrBot 全局配置中的唤醒词）",
+    "default": ["//"]
   },
   "detect_bot_name": {
     "description": "启用机器人名称/别名检测",

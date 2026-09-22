@@ -165,9 +165,70 @@ class TestFilters(unittest.TestCase):
 
     def test_command_detection(self):
         self.assertTrue(MessageFilter.is_command_message("/help"))
+        self.assertTrue(MessageFilter.is_command_message("//help"))
         self.assertTrue(MessageFilter.is_command_message("!status"))
         self.assertTrue(MessageFilter.is_command_message("。ping"))
         self.assertFalse(MessageFilter.is_command_message("请问这个怎么弄？"))
+
+    def test_is_wake_word_message(self):
+        # 1. 直接前缀匹配
+        event1 = MagicMock()
+        event1.get_message_str.return_value = "//眼镜片 1.74和1.60有什么区别"
+        event1.message_obj = None
+        event1.get_messages.return_value = []
+        is_wake, prefix = MessageFilter.is_wake_word_message(event1, wake_prefixes=["//"])
+        self.assertTrue(is_wake)
+        self.assertEqual(prefix, "//")
+
+        # 2. AstrBot WakingCheckStage 剥离了 message_str，但 message_obj.message_str 仍保留 //
+        event2 = MagicMock()
+        event2.get_message_str.return_value = "眼镜片 1.74和1.60有什么区别"
+        msg_obj2 = MagicMock()
+        msg_obj2.message_str = "//眼镜片 1.74和1.60有什么区别"
+        msg_obj2.raw_message = None
+        event2.message_obj = msg_obj2
+        event2.get_messages.return_value = []
+        is_wake, prefix = MessageFilter.is_wake_word_message(event2, wake_prefixes=["//"])
+        self.assertTrue(is_wake)
+        self.assertEqual(prefix, "//")
+
+        # 3. AstrBot WakingCheckStage 标记了 is_at_or_wake_command = True（非@机器人）
+        event3 = MagicMock()
+        event3.get_message_str.return_value = "眼镜片 1.74和1.60有什么区别"
+        msg_obj3 = MagicMock()
+        msg_obj3.message_str = "眼镜片 1.74和1.60有什么区别"
+        msg_obj3.raw_message = None
+        event3.message_obj = msg_obj3
+        event3.get_messages.return_value = []
+        event3.is_at_or_wake_command = True
+        is_wake, prefix = MessageFilter.is_wake_word_message(event3, wake_prefixes=["//"])
+        self.assertTrue(is_wake)
+        self.assertIn(prefix, ("//", "is_at_or_wake_command"))
+
+        # 4. raw_message 中包含微信格式的 user01:\n//眼镜片...
+        event4 = MagicMock()
+        event4.get_message_str.return_value = "眼镜片"
+        msg_obj4 = MagicMock()
+        msg_obj4.message_str = "眼镜片"
+        msg_obj4.raw_message = {"content": {"str": "user01:\n//眼镜片 1.74和1.60有什么区别"}}
+        event4.message_obj = msg_obj4
+        event4.get_messages.return_value = []
+        is_wake, prefix = MessageFilter.is_wake_word_message(event4, wake_prefixes=["//"])
+        self.assertTrue(is_wake)
+        self.assertEqual(prefix, "//")
+
+        # 5. 普通群聊消息（非唤醒词）
+        event5 = MagicMock()
+        event5.get_message_str.return_value = "你觉得兴发集团怎么样"
+        msg_obj5 = MagicMock()
+        msg_obj5.message_str = "你觉得兴发集团怎么样"
+        msg_obj5.raw_message = None
+        event5.message_obj = msg_obj5
+        event5.get_messages.return_value = []
+        event5.is_at_or_wake_command = False
+        is_wake, prefix = MessageFilter.is_wake_word_message(event5, wake_prefixes=["//"])
+        self.assertFalse(is_wake)
+        self.assertIsNone(prefix)
 
     def test_bot_alias_detection(self):
         aliases = ["小白", "机器人", "AI"]
@@ -437,7 +498,15 @@ class TestPluginE2E(unittest.IsolatedAsyncioTestCase):
         self.plugin = TypeSafeAutoReplyPlugin(self.context, self.config)
 
     def _make_mock_event(
-        self, text, sender_id="user_1", group_id="group_1", is_at=False, is_private=False
+        self,
+        text,
+        sender_id="user_1",
+        group_id="group_1",
+        is_at=False,
+        is_private=False,
+        is_at_or_wake_command=False,
+        raw_message=None,
+        orig_message_str=None,
     ):
         event = MagicMock()
         event.get_message_str.return_value = text
@@ -448,8 +517,14 @@ class TestPluginE2E(unittest.IsolatedAsyncioTestCase):
         event.get_self_id.return_value = "bot_id"
         event.unified_msg_origin = f"group:{group_id}"
         event.is_private_chat.return_value = is_private
+        event.is_at_or_wake_command = is_at_or_wake_command
         event.stop_event = MagicMock()
         event.plain_result = lambda msg: {"type": "plain", "text": msg}
+
+        msg_obj = MagicMock()
+        msg_obj.message_str = orig_message_str if orig_message_str is not None else text
+        msg_obj.raw_message = raw_message
+        event.message_obj = msg_obj
 
         at_comp = MagicMock()
         at_comp.qq = "bot_id"
@@ -681,6 +756,38 @@ class TestPluginE2E(unittest.IsolatedAsyncioTestCase):
         self.plugin.at_bot_mode = "pass_to_astrbot"
         self.plugin.classifier.classify_message = AsyncMock()
         event = self._make_mock_event("小白在吗", is_at=True)
+        results = [res async for res in self.plugin.on_group_message(event)]
+        self.assertEqual(len(results), 0)
+        self.plugin.classifier.classify_message.assert_not_called()
+        event.stop_event.assert_not_called()
+
+    async def test_wake_word_ignored_and_passes_to_astrbot(self):
+        # 当群消息使用 // 唤醒词时，且 ignore_wake_words=True，插件不自动回复，不截断事件，放行给 AstrBot 原生处理
+        self.plugin.ignore_wake_words = True
+        self.plugin.all_wake_prefixes = ["//"]
+        self.plugin.classifier.classify_message = AsyncMock()
+
+        # 模拟 AstrBot 已剥离前缀的 event (message_str 无 //，但 msg_obj.message_str 保留 // 且 is_at_or_wake_command 为 True)
+        event = self._make_mock_event(
+            text="眼镜片 1.74和1.60有什么区别",
+            orig_message_str="//眼镜片 1.74和1.60有什么区别",
+            is_at_or_wake_command=True,
+        )
+        results = [res async for res in self.plugin.on_group_message(event)]
+        self.assertEqual(len(results), 0)
+        self.plugin.classifier.classify_message.assert_not_called()
+        event.stop_event.assert_not_called()
+
+    async def test_wake_word_raw_message_ignored(self):
+        # 模拟微信等适配器 raw_message 中包含 \n// 前缀的情形
+        self.plugin.ignore_wake_words = True
+        self.plugin.all_wake_prefixes = ["//"]
+        self.plugin.classifier.classify_message = AsyncMock()
+
+        event = self._make_mock_event(
+            text="眼镜片 1.74和1.60有什么区别",
+            raw_message='{"content":{"str":"user01:\\n//眼镜片 1.74和1.60有什么区别"}}',
+        )
         results = [res async for res in self.plugin.on_group_message(event)]
         self.assertEqual(len(results), 0)
         self.plugin.classifier.classify_message.assert_not_called()

@@ -64,7 +64,7 @@ CQ_IMAGE_REGEX = re.compile(r"\[CQ:image,[^\]]*?(?:url|file)=([^,\]]+)", re.IGNO
     "astrbot_plugin_typesafe_autoreply",
     "AstrBot & TypeSafe Community",
     "使用 TypeSafe AI 判断聊天消息是否需要 AI 主动参与，并调用 AstrBot 已配置的大语言模型生成自然回复。",
-    "1.0.5",
+    "1.0.6",
     "https://github.com/yixuexiaoao/astrbot_plugin_typesafe_autoreply",
 )
 class TypeSafeAutoReplyPlugin(Star):
@@ -179,6 +179,13 @@ class TypeSafeAutoReplyPlugin(Star):
             "bot_aliases", ["小白", "机器人", "AI", "助手"]
         )
 
+        # 唤醒词消息过滤配置（如以 // 开头唤醒机器人，不执行自动回复，交由 AstrBot 原生处理）
+        self.ignore_wake_words = self.config.get("ignore_wake_words", True)
+        self.custom_wake_prefixes = self.config.get("custom_wake_prefixes", ["//"])
+        if not isinstance(self.custom_wake_prefixes, list):
+            self.custom_wake_prefixes = [str(self.custom_wake_prefixes)]
+        self.all_wake_prefixes = self._get_combined_wake_prefixes()
+
         # 6. 防刷屏与频控
         self.session_cooldown = self.config.get("session_cooldown", 30)
         self.user_cooldown = self.config.get("user_cooldown", 30)
@@ -268,6 +275,41 @@ class TypeSafeAutoReplyPlugin(Star):
             f"API配置: {self.typesafe_client.is_configured()}, 模型: {self.typesafe_model}, "
             f"群聊: {self.enable_group}, 私聊: {self.enable_private}"
         )
+
+    def _get_combined_wake_prefixes(self) -> list[str]:
+        """合并插件自定义与 AstrBot 全局配置的唤醒词前缀"""
+        prefixes = []
+        if isinstance(self.custom_wake_prefixes, list):
+            prefixes.extend([str(p).strip() for p in self.custom_wake_prefixes if str(p).strip()])
+        elif self.custom_wake_prefixes:
+            prefixes.append(str(self.custom_wake_prefixes).strip())
+
+        # 默认确保包含 //
+        if "//" not in prefixes:
+            prefixes.append("//")
+
+        try:
+            astrbot_conf = None
+            if hasattr(self.context, "get_config"):
+                astrbot_conf = self.context.get_config()
+            elif hasattr(self.context, "_config"):
+                astrbot_conf = self.context._config
+            elif hasattr(self.context, "astrbot_config"):
+                astrbot_conf = self.context.astrbot_config
+
+            if astrbot_conf and isinstance(astrbot_conf, dict):
+                wp = astrbot_conf.get("wake_prefix", [])
+                if isinstance(wp, list):
+                    for p in wp:
+                        p_str = str(p).strip()
+                        if p_str and p_str not in prefixes:
+                            prefixes.append(p_str)
+                elif isinstance(wp, str) and wp.strip() and wp.strip() not in prefixes:
+                    prefixes.append(wp.strip())
+        except Exception as e:
+            logger.debug(f"[TypeSafe] 读取 AstrBot 全局 wake_prefix 失败: {e}")
+
+        return prefixes
 
     async def _apply_reply_delay(self):
         """执行模拟真人思考与打字的延时"""
@@ -398,6 +440,20 @@ class TypeSafeAutoReplyPlugin(Star):
             if self.debug_log:
                 logger.debug(f"[TypeSafe] [规则过滤] 忽略纯媒体/表情消息: \"{display_msg}\"")
             return
+
+        # 5.1 唤醒词检测（如使用 // 显式唤醒机器人，不执行自动回复，交由 AstrBot 原生处理）
+        if self.ignore_wake_words:
+            is_wake_word, matched_prefix = self.filter.is_wake_word_message(
+                event=event,
+                wake_prefixes=self.all_wake_prefixes,
+                bot_aliases=self.bot_aliases,
+            )
+            if is_wake_word:
+                logger.info(
+                    f"[TypeSafe] [唤醒词接管] 检测到消息使用唤醒词/前缀 ('{matched_prefix}') 唤醒机器人，"
+                    f"本插件不执行自动回复，交由 AstrBot 原生逻辑处理"
+                )
+                return
 
         # 日志记录进入决策流水线的消息
         logger.info(
@@ -696,6 +752,12 @@ class TypeSafeAutoReplyPlugin(Star):
             "pass_to_astrbot": "不处理 (交由 AstrBot 原生处理)",
         }.get(self.at_bot_mode, self.at_bot_mode)
 
+        wake_info = (
+            f"开启 (前缀: {', '.join(self.all_wake_prefixes) or '无'})"
+            if self.ignore_wake_words
+            else "关闭"
+        )
+
         status_text = (
             "=== TypeSafe 智能自动回复插件状态 ===\n"
             f"插件总开关: {'开启' if self.enable_plugin else '关闭'}\n"
@@ -704,6 +766,7 @@ class TypeSafeAutoReplyPlugin(Star):
             f"群聊自动回复: {'开启' if self.enable_group else '关闭'}\n"
             f"私聊自动回复: {'开启' if self.enable_private else '关闭'}\n"
             f"@机器人处理策略: {at_bot_mode_desc}\n"
+            f"唤醒词过滤: {wake_info}\n"
             f"回复延时模拟: {delay_info}\n"
             f"模型模式: {self.model_mode} (指定ID: {self.custom_provider_id or '无'})\n"
             f"回复风格: {self.reply_style}\n"
